@@ -361,6 +361,11 @@ topic_iterator_t::ptr build_iterator(const Worker::value_t& expr) {
 			}
 			return topic_iterator_t::ptr(new difference_topic_iterator_t(build_iterator(exprs[1]), build_iterator(exprs[2])));
 		} else {
+			if (exprs.size() == 2) {
+				return build_iterator(exprs[1]);
+			} else if (exprs.size() == 1) {
+				throw runtime_error("unknown expression");
+			}
 			auto_ptr<topic_iterator_t::ptr_vector_t> iterators(new topic_iterator_t::ptr_vector_t(exprs.size() - 1));
 			for (size_t ii = 1; ii < exprs.size(); ++ii) {
 				iterators->push_back(build_iterator(exprs[ii]));
