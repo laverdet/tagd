@@ -115,7 +115,9 @@ struct union_topic_iterator_t: public topic_iterator_t {
 	virtual void ff(const topic_t* ref) {
 		// Fast-forward each iterator individually
 		foreach (topic_iterator_t& ii, *iterators) {
-			ii.ff(ref);
+			if (*ii != NULL && topic_t::less()(*ii, ref)) {
+				ii.ff(ref);
+			}
 		}
 		update();
 	}
@@ -185,7 +187,9 @@ struct intersection_topic_iterator_t: public topic_iterator_t {
 	virtual void ff(const topic_t* ref) {
 		// Fast-forward each iterator individually
 		foreach (topic_iterator_t& ii, *iterators) {
-			ii.ff(ref);
+			if (*ii != NULL && topic_t::less()(*ii, ref)) {
+				ii.ff(ref);
+			}
 		}
 		update();
 	}
@@ -240,7 +244,7 @@ struct difference_topic_iterator_t: public topic_iterator_t {
 	virtual void ff(const topic_t* ref) {
 		// Fast-forward both iterators individually
 		left->ff(ref);
-		if (**right != NULL) {
+		if (**right != NULL && topic_t::less()(**right, ref)) {
 			right->ff(ref);
 		}
 		update();
