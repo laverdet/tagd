@@ -154,6 +154,10 @@ struct intersection_topic_iterator_t: public topic_iterator_t {
 		const topic_t* oldest = *iterators[0];
 		size_t oldest_ii = 0, ii = 1;
 
+		if (oldest == NULL) {
+			current = NULL;
+			return;
+		}
 		do {
 			// Keep cycling through all the iterators
 			if (ii >= iterators.size()) {
