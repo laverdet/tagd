@@ -398,8 +398,8 @@ void req_slice(Worker& worker, const Worker::request_handle_t& handle, const vec
 	// Initialize
 	topic_iterator_t::ptr it = build_iterator(args[0]);
 	size_t count = args[1].get_int();
-	ts_t ff = args.size() > 2 ? (args[2].type() == json_spirit::bool_type ? args[2].get_bool() : args[2].get_int()) : 0;
-	bool estimate_count = args.size() > 3 ? args[3].get_bool() : false;
+	ts_t ff = args.size() > 2 ? (args[2].type() == json_spirit::int_type ? args[2].get_int() : 0) : 0;
+	bool estimate_count = args.size() > 3 ? (args[3].type() == json_spirit::bool_type ? args[3].get_bool() : false) : false;
 
 	// Fastforward?
 	if (ff) {
