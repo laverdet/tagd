@@ -42,6 +42,7 @@ void Worker::read_cb(struct ev_loop* loop, struct ev_io* watcher, int revents) {
 	size_t len = recv(watcher->fd, buf, read_size, 0);
 	if (!len) {
 		ev_io_stop(my_loop, watcher);
+		close(watcher->fd);
 		delete &that;
 		return;
 	}
