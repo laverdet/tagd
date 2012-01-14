@@ -2,8 +2,9 @@
 #include <stdint.h>
 #include <math.h>
 #include <set>
-#include <boost/foreach.hpp>
 #include <boost/ptr_container/ptr_vector.hpp>
+#include <boost/thread/mutex.hpp>
+#include <boost/foreach.hpp>
 #define foreach BOOST_FOREACH
 
 using namespace std;
@@ -271,6 +272,7 @@ struct difference_topic_iterator_t: public topic_iterator_t {
 
 tag_map_t topics_by_tags;
 topic_map_t topics_by_id;
+boost::shared_mutex write_lock;
 
 /**
  * Modifies the timestamp of a given topic.
@@ -299,6 +301,7 @@ void exec_bump_topic(topic_id_t id, ts_t ts) {
  * Message from the binlog watcher to update a topic's timestamp.
  */
 void msg_bump_topic(Worker& worker, const vector<Worker::value_t>& args) {
+	boost::lock_guard<boost::shared_mutex> lock(write_lock);
 	exec_bump_topic(args[0].get_uint64(), args[1].get_int());
 }
 
@@ -306,6 +309,7 @@ void msg_bump_topic(Worker& worker, const vector<Worker::value_t>& args) {
  * Message from the binlog watcher to associate a list of tags with a topic.
  */
 void msg_add_tags(Worker& worker, const vector<Worker::value_t>& args) {
+	boost::lock_guard<boost::shared_mutex> lock(write_lock);
 	topic_id_t id = args[0].get_uint64();
 	ts_t ts = args[1].get_int();
 
@@ -395,7 +399,9 @@ topic_iterator_t::ptr build_iterator(const Worker::value_t& expr) {
  * Request from a server for a slice of topics by expression
  */
 void req_slice(Worker& worker, const Worker::request_handle_t& handle, const vector<Worker::value_t>& args) {
+
 	// Initialize
+	boost::shared_lock<boost::shared_mutex> lock(write_lock);
 	topic_iterator_t::ptr it = build_iterator(args[0]);
 	size_t count = args[1].get_int();
 	ts_t ff = args.size() > 2 ? (args[2].type() == json_spirit::int_type ? args[2].get_int() : 0) : 0;

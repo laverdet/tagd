@@ -1,6 +1,8 @@
 #include <string>
 #include <string.h>
-#include <memory>
+#include <boost/threadpool.hpp>
+#include <boost/thread/mutex.hpp>
+#include <boost/ptr_container/ptr_deque.hpp>
 #include <ev.h>
 #include <json_spirit.h>
 
@@ -13,24 +15,41 @@ class Worker {
 		typedef std::string request_handle_t;
 
 	private:
+		struct buffer_t {
+			char* data;
+			size_t offset;
+			size_t length;
+			buffer_t(const char* my_data, size_t length) : offset(0), length(length) {
+				data = new char[length];
+				memcpy(data, my_data, length);
+			};
+			~buffer_t() {
+				delete data;
+			}
+		};
+
 		static const size_t read_size = 4096;
-		std::string buffer;
+		std::string read_buffer;
+		boost::ptr_deque<buffer_t> write_buffer;
+		boost::mutex write_lock;
 
 		static struct ev_loop* my_loop;
-		Server* server;
 		int fd;
-		struct ev_io read_watcher;
+		Server& server;
+		struct ev_io fd_watcher;
 
-		static void read_cb(struct ev_loop* loop, struct ev_io* watcher, int revents);
+		static void fd_cb(struct ev_loop* loop, struct ev_io* watcher, int revents);
+		void read_cb();
+		void write_cb();
 		void handle_payload(const value_t& value);
 
 		/**
 		 * Private constructer called by Server.
 		 */
-		Worker(Server& server, int fd) : server(&server), fd(fd) {
-			ev_io_init(&read_watcher, read_cb, fd, EV_READ);
-			read_watcher.data = this;
-			ev_io_start(Worker::my_loop, &read_watcher);
+		Worker(Server& server, int fd) : server(server), fd(fd) {
+			ev_io_init(&fd_watcher, fd_cb, fd, EV_READ);
+			fd_watcher.data = this;
+			ev_io_start(Worker::my_loop, &fd_watcher);
 		}
 
 	public:
@@ -46,17 +65,19 @@ class Worker {
 			private:
 				int fd;
 				struct ev_io accept_watcher;
+				boost::threadpool::pool threads;
 
 				std::map<const std::string, request_handler_t> request_handlers;
 				std::map<const std::string, message_handler_t> message_handlers;
 
 				static void accept_cb(struct ev_loop* loop, struct ev_io* watcher, int revents);
+				static void request_wrapper(request_handler_t fn, Worker* worker, const request_handle_t& handle, const std::vector<value_t>& args);
 
 				/**
 				 * Takes an existing listening fd and accepts new connections. Each new connection is allocated its
 				 * own Worker instance with event handlers inherited from the server.
 				 */
-				Server(int fd) : fd(fd) {
+				Server(int fd) : fd(fd), threads(10) {
 					ev_io_init(&accept_watcher, accept_cb, fd, EV_READ);
 					accept_watcher.data = this;
 					ev_io_start(Worker::my_loop, &accept_watcher);
