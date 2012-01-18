@@ -1,10 +1,10 @@
-CPPFLAGS += -ggdb -I./threadpool -I./backtrace
+CPPFLAGS += -ggdb -I./threadpool
 
 %.o: %.cc
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c -o $@ $^
 
 tagd: tagd.o libeti_worker.o
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -o $@ $^ ./backtrace/libs/backtrace/src/backtrace.cpp -ljson_spirit -lev -ldl -lboost_thread
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -o $@ $^ -ljson_spirit -lev -ldl -lboost_thread
 
 clean:
 	$(RM) *.o

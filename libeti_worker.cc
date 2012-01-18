@@ -2,7 +2,6 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <boost/bind.hpp>
-#include <boost/backtrace.hpp>
 #include <boost/foreach.hpp>
 #define foreach BOOST_FOREACH
 
@@ -133,38 +132,32 @@ void Worker::write_cb() {
 }
 
 void Worker::handle_payload(const value_t& value) {
-	try {
-		const vector<value_t>& payloads = value.get_array();
-		foreach (const value_t& payload, payloads) {
-			const string& type = payload.get_obj().find("type")->second.get_str();
-			const string& name = payload.get_obj().find("name")->second.get_str();
-			const vector<value_t>& args = payload.get_obj().find("data")->second.get_array();
-			if (type == "request") {
-				map<const string, Server::request_handler_t>::iterator ii = server.request_handlers.find(name);
-				if (ii == server.request_handlers.end()) {
-					throw runtime_error("unknown request received");
-				}
-				server.threads.schedule(boost::bind(
-					Worker::Server::request_wrapper,
-					ii->second,
-					this,
-					payload.get_obj().find("uniq")->second.get_str(),
-					args
-				));
-			} else if (type == "message") {
-				map<const string, Server::message_handler_t>::iterator ii = server.message_handlers.find(name);
-				if (ii == server.message_handlers.end()) {
-					throw runtime_error("unknown message received");
-				}
-				server.threads.schedule(boost::bind(ii->second, boost::ref(*this), args));
-			} else {
-				throw runtime_error("unknown payload received");
+	const vector<value_t>& payloads = value.get_array();
+	foreach (const value_t& payload, payloads) {
+		const string& type = payload.get_obj().find("type")->second.get_str();
+		const string& name = payload.get_obj().find("name")->second.get_str();
+		const vector<value_t>& args = payload.get_obj().find("data")->second.get_array();
+		if (type == "request") {
+			map<const string, Server::request_handler_t>::iterator ii = server.request_handlers.find(name);
+			if (ii == server.request_handlers.end()) {
+				throw runtime_error("unknown request received");
 			}
+			server.threads.schedule(boost::bind(
+				Worker::Server::request_wrapper,
+				ii->second,
+				this,
+				payload.get_obj().find("uniq")->second.get_str(),
+				args
+			));
+		} else if (type == "message") {
+			map<const string, Server::message_handler_t>::iterator ii = server.message_handlers.find(name);
+			if (ii == server.message_handlers.end()) {
+				throw runtime_error("unknown message received");
+			}
+			server.threads.schedule(boost::bind(ii->second, boost::ref(*this), args));
+		} else {
+			throw runtime_error("unknown payload received");
 		}
-	} catch (runtime_error const &err) {
-		cerr <<err.what() <<"\n";
-		cerr <<boost::trace(err) <<"\n";
-		cerr <<json_spirit::write(value) <<"\n";
 	}
 }
 
