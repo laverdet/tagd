@@ -356,6 +356,30 @@ void msg_add_tags(Worker& worker, const vector<Worker::value_t>& args) {
 }
 
 /**
+ * Message from the binlog watcher to remove a tag.
+ */
+void msg_remove_tag(Worker& worker, const vector<Worker::value_t>& args) {
+	boost::lock_guard<boost::shared_mutex> lock(write_lock);
+	topic_id_t id = args[0].get_uint64();
+	tag_t tag = args[1].get_uint64();
+
+	// Find the topic
+	topic_map_t::iterator ii = topics_by_id.find(id);
+	if (ii == topics_by_id.end()) {
+		return;
+	}
+	topic_t& topic = *ii->second;
+
+	// Remove the tag
+	tag_set_t::iterator tag_in_set = topic.tags.find(tag);
+	if (tag_in_set != topic.tags.end()) {
+		topic.tags.erase(tag_in_set);
+		topic_set_t& topic_set = *topics_by_tags.find(tag)->second;
+		topic_set.erase(topic_set.find(&topic));
+	}
+}
+
+/**
  * Builds an iterator from a JSON expression.
  */
 topic_iterator_t::ptr build_iterator(const Worker::value_t& expr) {
@@ -462,6 +486,7 @@ int main(const int argc, const char* argv[]) {
 	}
 	Worker::Server::ptr server = Worker::listen(argv[1]);
 	server->register_handler("addTags", msg_add_tags);
+	server->register_handler("removeTag", msg_remove_tag);
 	server->register_handler("bumpTopic", msg_bump_topic);
 	server->register_handler("slice", req_slice);
 	Worker::loop();
