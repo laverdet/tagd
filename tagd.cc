@@ -415,11 +415,8 @@ struct difference_topic_iterator_t: public topic_iterator_t {
 	}
 
 	virtual difference_topic_iterator_t& operator++ () {
-		// Advance both iterators
+		// Only need to advance the left iterator since right will be advanced in update()
 		++*left;
-		if (**right != NULL) {
-			++*right;
-		}
 		update();
 		return *this;
 	}
