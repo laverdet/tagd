@@ -1,11 +1,16 @@
 #include "libeti_worker.h"
 #include <stdint.h>
 #include <math.h>
+#include <sys/time.h>
 #include <set>
 #include <boost/ptr_container/ptr_vector.hpp>
 #include <boost/thread/mutex.hpp>
 #include <boost/foreach.hpp>
 #define foreach BOOST_FOREACH
+#define reverse_foreach BOOST_REVERSE_FOREACH
+
+const double message_cutoff = 43200;
+const double topic_cutoff = 86400 * 5;
 
 using namespace std;
 using namespace boost;
@@ -16,6 +21,7 @@ boost::shared_mutex write_lock;
 struct base_topic_t {
 	typedef uint64_t id_t;
 	typedef uint32_t ts_t;
+	typedef uint32_t user_t;
 
 	id_t id;
 	ts_t ts;
@@ -30,22 +36,23 @@ struct base_topic_t {
 };
 
 struct topic_t: public base_topic_t {
-	typedef multimap<struct word_t*, uint32_t> document_t;
+	typedef pair<ts_t, user_t> post_t;
 
 	static map<id_t, base_topic_t*> topics_by_id;
 
 	set<struct tag_t*> tags;
 	set<struct word_t*> words;
-	// leave this stuff in even though it's not being used, to get an idea of memory usage
-	document_t document;
-	vector<struct word_t*> vdocument;
+	set<post_t> messages;
+	map<user_t, uint32_t> message_counts;
+	ts_t created;
 
-	topic_t(id_t id, ts_t ts) : base_topic_t(id, ts) {};
+	topic_t(id_t id, ts_t ts) : base_topic_t(id, ts), created(0) {};
 
 	static topic_t* find(id_t id);
 	static topic_t* find(id_t id, ts_t ts);
 	static topic_t& get(id_t id, ts_t ts);
 	void bump(ts_t ts);
+	double score() const;
 };
 map<topic_t::id_t, base_topic_t*> topic_t::topics_by_id;
 
@@ -53,12 +60,14 @@ struct tag_t {
 	typedef uint32_t id_t;
 	typedef set<topic_t*, topic_t::less> topic_set_t;
 	static vector<tag_t*> tags_by_id;
+	static tag_t active_tag;
 
 	topic_set_t topics;
 
 	static tag_t& get(id_t id);
 };
 vector<tag_t*> tag_t::tags_by_id(1, NULL);
+tag_t tag_t::active_tag;
 
 struct word_t {
 	typedef set<topic_t*, topic_t::less> topic_set_t;
@@ -125,6 +134,10 @@ void topic_t::bump(ts_t ts) {
 	foreach (word_t* word, words) {
 		word->topics.insert(this);
 	}
+}
+
+double topic_t::score() const {
+	return (1 - log10((time(NULL) - created) / topic_cutoff * 9 + 1)) * message_counts.size();
 }
 
 tag_t& tag_t::get(id_t id) {
@@ -427,117 +440,36 @@ struct difference_topic_iterator_t: public topic_iterator_t {
 };
 
 /**
- * Full-text phrase iterator. Returns topics matching a full-text iterator.
- *
- * INCOMPLETE: I stopped coding this at some point. Pick this back up when you feel like it.
- */
-topic_iterator_t::ptr build_wildcard_iterator(const string& word);
-struct phrase_topic_iterator_t: public topic_iterator_t {
-	typedef vector<string> word_vector_t;
-
-	auto_ptr<topic_iterator_t> base_iterator;
-	auto_ptr<word_vector_t> tokens;
-	vector<word_t*> words;
-	const topic_t* current;
-
-	phrase_topic_iterator_t(auto_ptr<word_vector_t> tokens) : tokens(tokens), words(this->tokens->size(), NULL) {
-		auto_ptr<topic_iterator_t::ptr_vector_t> iterators(new topic_iterator_t::ptr_vector_t);
-		size_t ii = 0;
-		foreach (const string& token, *this->tokens) {
-			++ii;
-			if (token[token.length() - 1] == '*') {
-				if (ii == 1) {
-					throw runtime_error("invalid phrase search");
-				}
-				string no_star(token.substr(0, token.length() - 1));
-				try {
-					iterators->push_back(build_wildcard_iterator(no_star));
-				} catch (const runtime_error& error) {
-					// don't worry about too many matches
-				}
-			} else if (token == "*") {
-				if (ii == 1) {
-					throw runtime_error("invalid phrase search");
-				}
-				continue;
-			} else {
-				word_t* word = word_t::find(token);
-				words[ii - 1] = word;
-				if (word) {
-					iterators->push_back(topic_iterator_t::ptr(new basic_topic_iterator_t(word->topics)));
-				} else {
-					iterators->clear();
-					iterators->push_back(topic_iterator_t::ptr(new null_topic_iterator_t));
-					break;
-				}
-			}
-		}
-
-		if (iterators->size() == 0) {
-			throw runtime_error("invalid phrase search");
-		} else if (iterators->size() == 1) {
-			base_iterator = topic_iterator_t::ptr(iterators->pop_back().release());
-		} else {
-			base_iterator = topic_iterator_t::ptr(new intersection_topic_iterator_t(iterators));
-		}
-
-		update();
-	}
-
-	bool matches(const topic_t*, size_t word, uint32_t cursor) {
-		if (word == words.size()) {
-			return true;
-		}
-	}
-
-	void update() {
-		const topic_t* topic = **base_iterator;
-		for (const topic_t* topic = **base_iterator; topic; ++*base_iterator) {
-			pair<topic_t::document_t::const_iterator, topic_t::document_t::const_iterator> seed_range(topic->document.equal_range(words[0]));
-			for (; seed_range.first != seed_range.second; ++seed_range.first) {
-				if (matches(topic, 1, seed_range.first->second + 1)) {
-					current = topic;
-					break;
-				}
-			}
-		}
-		current = NULL;
-		return;
-	}
-
-	virtual void ff(const base_topic_t* ref) {
-		base_iterator->ff(ref);
-		update();
-	}
-
-	virtual size_t max() const {
-		return base_iterator->max();
-	}
-
-	virtual phrase_topic_iterator_t& operator++ () {
-		++*base_iterator;
-		update();
-		return *this;
-	}
-
-	virtual const topic_t* operator* () const {
-		return current;
-	}
-};
-
-
-/**
  * Message from the binlog watcher to update a topic's timestamp.
  */
 void msg_bump_topic(Worker& worker, const vector<Worker::value_t>& args) {
 	boost::lock_guard<boost::shared_mutex> lock(write_lock);
 	topic_t::id_t id = args[0].get_uint64();
 	topic_t::ts_t ts = args[1].get_int();
+	topic_t::user_t user = args[2].get_int();
 
 	topic_t* topic = topic_t::find(id);
 	if (topic) {
 		topic->bump(ts);
+		if (time(NULL) - topic_cutoff < topic->created) {
+			topic->messages.insert(make_pair(ts, user));
+			++topic->message_counts[user];
+			tag_t::active_tag.topics.insert(topic);
+			topic->tags.insert(&tag_t::active_tag);
+		}
 	}
+}
+
+/**
+ * Message from the binlog watcher when a topic is created.
+ */
+void msg_created_topic(Worker& worker, const vector<Worker::value_t>& args) {
+	boost::lock_guard<boost::shared_mutex> lock(write_lock);
+	topic_t::id_t id = args[0].get_uint64();
+	topic_t::ts_t ts = args[1].get_int();
+
+	topic_t& topic = topic_t::get(id, ts);
+	topic.created = ts;
 }
 
 /**
@@ -588,18 +520,11 @@ void msg_full_text(Worker& worker, const vector<Worker::value_t>& args) {
 	const vector<Worker::value_t>& document = args[2].get_array();
 
 	topic_t& topic = topic_t::get(id, ts);
-	set<word_t*> original_words;
-	for (multimap<word_t*, uint32_t>::iterator word = topic.document.begin(); word != topic.document.end(); ++word) {
-		original_words.insert(word->first);
-	}
-	topic.document.clear();
-	topic.vdocument.resize(document.size());
+	set<word_t*> original_words(topic.words);
 	topic.words.clear();
 	uint32_t ii = 0;
 	foreach (const Worker::value_t& token, document) {
 		word_t& word = word_t::get(token.get_str());
-		topic.document.insert(make_pair(&word, ii));
-		topic.vdocument[ii] = &word;
 		topic.words.insert(&word);
 		++ii;
 	}
@@ -625,6 +550,47 @@ void msg_full_text(Worker& worker, const vector<Worker::value_t>& args) {
 	while (right != topic.words.end()) {
 		(*right)->topics.insert(&topic);
 		++right;
+	}
+}
+
+/**
+ * Every 5 minutes or whatever this is called to go through and to pull out old messages from each
+ * topic's `messages` and `message_counts` objects.
+ */
+void msg_flush_counts(Worker& worker, const vector<Worker::value_t>& args) {
+	boost::lock_guard<boost::shared_mutex> lock(write_lock);
+	topic_t::ts_t ts = time(NULL);
+
+	// Loop through each topic with an active message
+	tag_t::topic_set_t::iterator ii = tag_t::active_tag.topics.begin();
+	while (ii != tag_t::active_tag.topics.end()) {
+		topic_t& topic = **ii;
+
+		// Loop through all messages in the topic
+		set<topic_t::post_t>::iterator jj = topic.messages.begin();
+		while (jj != topic.messages.end()) {
+
+			// If this post is older than the cutoff remove it
+			if (jj->first < ts - message_cutoff) {
+				map<topic_t::user_t, uint32_t>::iterator count_iterator = topic.message_counts.find(jj->second);
+				if (count_iterator->second == 1) {
+					topic.message_counts.erase(count_iterator);
+				} else {
+					--count_iterator->second;
+				}
+				topic.messages.erase(jj++);
+			} else {
+				break;
+			}
+		}
+
+		// No more active messages?
+		if (topic.messages.empty()) {
+			tag_t::active_tag.topics.erase(ii++);
+			topic.tags.erase(&tag_t::active_tag);
+		} else {
+			++ii;
+		}
 	}
 }
 
@@ -766,6 +732,37 @@ void req_slice(Worker& worker, const Worker::request_handle_t& handle, const vec
 	}
 }
 
+/**
+ * Request for most active topics from an expression
+ */
+typedef pair<double, const topic_t*> score_topic_pair_t;
+void req_hot(Worker& worker, const Worker::request_handle_t& handle, const vector<Worker::value_t>& args) {
+
+	// Initialize
+	boost::shared_lock<boost::shared_mutex> lock(write_lock);
+	auto_ptr<topic_iterator_t::ptr_vector_t> iterators(new topic_iterator_t::ptr_vector_t);
+	iterators->push_back(topic_iterator_t::ptr(new basic_topic_iterator_t(tag_t::active_tag.topics)));
+	iterators->push_back(build_iterator(args[0]));
+	topic_iterator_t::ptr it(new intersection_topic_iterator_t(iterators));
+	uint32_t count = args[1].get_int();
+
+	// Push results into a set to sort
+	set<pair<double, const topic_t*> > results;
+	for (const topic_t* ii = **it; ii; ii = *(++*it)) {
+		results.insert(make_pair(ii->score(), ii));
+	}
+
+	// Generate payload
+	vector<Worker::value_t> json;
+	reverse_foreach(const score_topic_pair_t& ii, results) {
+		json.push_back(ii.second->id);
+		if (!--count) {
+			break;
+		}
+	}
+	worker.respond(handle, json);
+}
+
 int main(const int argc, const char* argv[]) {
 	if (argc != 2) {
 		cout <<"usage: " <<argv[0] <<" <socket>\n";
@@ -775,8 +772,11 @@ int main(const int argc, const char* argv[]) {
 	server->register_handler("addTags", msg_add_tags);
 	server->register_handler("removeTag", msg_remove_tag);
 	server->register_handler("bumpTopic", msg_bump_topic);
+	server->register_handler("createTopic", msg_created_topic);
 	server->register_handler("fullText", msg_full_text);
+	server->register_handler("flushCounts", msg_flush_counts);
 	server->register_handler("slice", req_slice);
+	server->register_handler("hot", req_hot);
 	Worker::loop();
 	return 0;
 }
