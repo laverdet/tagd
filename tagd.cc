@@ -137,7 +137,7 @@ void topic_t::bump(ts_t ts) {
 }
 
 double topic_t::score() const {
-	return (1 - log10((time(NULL) - created) / topic_cutoff * 9 + 1)) * message_counts.size();
+	return (1 - pow((time(NULL) - created) / topic_cutoff, 2)) * message_counts.size();
 }
 
 tag_t& tag_t::get(id_t id) {
