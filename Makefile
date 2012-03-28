@@ -1,4 +1,4 @@
-CPPFLAGS += -ggdb -I./threadpool
+CPPFLAGS += -march=native -ggdb -I./threadpool
 
 %.o: %.cc
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c -o $@ $^
