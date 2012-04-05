@@ -710,17 +710,19 @@ void req_slice(Worker& worker, const Worker::request_handle_t& handle, const vec
 				// Skip in exponentially wider chunks to guess the order of magnitude of results
 				auto_ptr<base_topic_t> fake_topic(new base_topic_t(0, 0));
 				size_t magnitude = round(log10(results.size())) - 2;
+				base_topic_t::ts_t last_ts = first_ts;
 				while (**it) {
 					fake_topic->ts = first_ts - (first_ts - (*it)->ts) * 10;
-					if (fake_topic->ts > first_ts) {
+					if (fake_topic->ts > last_ts) {
 						// Overflow?
 						++magnitude;
 						break;
-					} else if (fake_topic->ts == first_ts) {
+					} else if (fake_topic->ts == last_ts) {
 						// Same time posts
-						++fake_topic->ts;
+						--fake_topic->ts;
 					}
 					it->ff(&*fake_topic);
+					last_ts = fake_topic->ts;
 					++magnitude;
 				}
 				response.insert(make_pair("count", pow(10, magnitude)));
