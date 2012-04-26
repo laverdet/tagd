@@ -61,6 +61,7 @@ struct tag_t {
 	typedef set<topic_t*, topic_t::less> topic_set_t;
 	static vector<tag_t*> tags_by_id;
 	static tag_t active_tag;
+	static tag_t global_tag;
 
 	topic_set_t topics;
 
@@ -68,6 +69,7 @@ struct tag_t {
 };
 vector<tag_t*> tag_t::tags_by_id(1, NULL);
 tag_t tag_t::active_tag;
+tag_t tag_t::global_tag;
 
 struct word_t {
 	typedef set<topic_t*, topic_t::less> topic_set_t;
@@ -110,6 +112,8 @@ topic_t& topic_t::get(id_t id, ts_t ts) {
 
 	topic = new topic_t(id, ts);
 	topics_by_id.insert(make_pair(id, topic));
+	tag_t::global_tag.topics.insert(topic);
+	topic->tags.insert(&tag_t::global_tag);
 	return *topic;
 }
 
@@ -621,8 +625,14 @@ topic_iterator_t::ptr build_wildcard_iterator(const string& word) {
  */
 topic_iterator_t::ptr build_iterator(const Worker::value_t& expr) {
 	if (expr.type() == json_spirit::int_type) {
-		tag_t& tag = tag_t::get(expr.get_int());
-		return topic_iterator_t::ptr(new basic_topic_iterator_t(tag.topics));
+		int val = expr.get_int();
+		tag_t* tag;
+		if (val) {
+			tag = &tag_t::get(expr.get_int());
+		} else {
+			tag = &tag_t::global_tag;
+		}
+		return topic_iterator_t::ptr(new basic_topic_iterator_t(tag->topics));
 	} else if (expr.type() == json_spirit::str_type) {
 		const string& word = expr.get_str();
 		if (word.length() >= 2 && word[word.length() - 1] == '*') {
