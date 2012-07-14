@@ -692,7 +692,7 @@ void req_slice(Worker& worker, const Worker::request_handle_t& handle, const vec
 		bool estimate_count = args.size() > 3 ? (args[3].type() == json_spirit::bool_type ? args[3].get_bool() : false) : false;
 
 		// Fastforward?
-		if (ff) {
+		if (ff && **it != NULL) {
 			auto_ptr<base_topic_t> fake_topic(new base_topic_t(0, ff));
 			it->ff(&*fake_topic);
 		}
