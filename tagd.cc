@@ -515,6 +515,22 @@ void msg_remove_tag(Worker& worker, const vector<Worker::value_t>& args) {
 }
 
 /**
+ * Message to remove this tag from *all* topics. This is used to start over from
+ * scratch on a tag, after retraining autotag.
+ */
+void msg_clear_tag(Worker& worker, const vector<Worker::value_t>& args) {
+	boost::lock_guard<boost::shared_mutex> lock(write_lock);
+	tag_t::id_t tag_id = args[0].get_uint64();
+
+	// Remove tag from all topics
+	tag_t& tag = tag_t::get(tag_id);
+	foreach (topic_t* topic, tag.topics) {
+		topic->tags.erase(&tag);
+	}
+	tag.topics.clear();
+}
+
+/**
  * Sets the full-text search content of a topic.
  */
 void msg_full_text(Worker& worker, const vector<Worker::value_t>& args) {
@@ -692,9 +708,12 @@ void req_slice(Worker& worker, const Worker::request_handle_t& handle, const vec
 		bool estimate_count = args.size() > 3 ? (args[3].type() == json_spirit::bool_type ? args[3].get_bool() : false) : false;
 
 		// Fastforward?
-		if (ff && **it != NULL) {
-			auto_ptr<base_topic_t> fake_topic(new base_topic_t(0, ff));
-			it->ff(&*fake_topic);
+		if (ff) {
+			const topic_t* first_topic = **it;
+			if (first_topic != NULL && first_topic->ts > ff) {
+				auto_ptr<base_topic_t> fake_topic(new base_topic_t(0, ff));
+				it->ff(&*fake_topic);
+			}
 		}
 
 		// Build results by id
@@ -775,6 +794,15 @@ void req_hot(Worker& worker, const Worker::request_handle_t& handle, const vecto
 	worker.respond(handle, json);
 }
 
+/**
+ * Simply lock and unlock the service. This is useful to make sure writes have caught up.
+ */
+void req_sync(Worker& worker, const Worker::request_handle_t& handle, const vector<Worker::value_t>& args) {
+	write_lock.lock();
+	write_lock.unlock();
+	worker.respond(handle, Worker::value_t(true));
+}
+
 int main(const int argc, const char* argv[]) {
 	if (argc != 2) {
 		cout <<"usage: " <<argv[0] <<" <socket>\n";
@@ -783,12 +811,14 @@ int main(const int argc, const char* argv[]) {
 	Worker::Server::ptr server = Worker::listen(argv[1]);
 	server->register_handler("addTags", msg_add_tags);
 	server->register_handler("removeTag", msg_remove_tag);
+	server->register_handler("clearTag", msg_clear_tag);
 	server->register_handler("bumpTopic", msg_bump_topic);
 	server->register_handler("createTopic", msg_created_topic);
 	server->register_handler("fullText", msg_full_text);
 	server->register_handler("flushCounts", msg_flush_counts);
 	server->register_handler("slice", req_slice);
 	server->register_handler("hot", req_hot);
+	server->register_handler("sync", req_sync);
 	Worker::loop();
 	return 0;
 }
