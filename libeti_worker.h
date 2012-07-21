@@ -24,7 +24,7 @@ class Worker {
 				memcpy(data, my_data, length);
 			};
 			~buffer_t() {
-				delete data;
+				delete[] data;
 			}
 		};
 
@@ -71,7 +71,8 @@ class Worker {
 				std::map<const std::string, message_handler_t> message_handlers;
 
 				static void accept_cb(struct ev_loop* loop, struct ev_io* watcher, int revents);
-				static void request_wrapper(request_handler_t fn, Worker* worker, const request_handle_t& handle, const std::vector<value_t>& args);
+				static void request_wrapper(request_handler_t fn, Worker* worker, const request_handle_t handle, const std::vector<value_t> args);
+				static void message_wrapper(message_handler_t fn, Worker* worker, const std::vector<value_t> args);
 
 				/**
 				 * Takes an existing listening fd and accepts new connections. Each new connection is allocated its
@@ -81,7 +82,7 @@ class Worker {
 					ev_io_init(&accept_watcher, accept_cb, fd, EV_READ);
 					accept_watcher.data = this;
 					ev_io_start(Worker::my_loop, &accept_watcher);
-				};
+				}
 
 			public:
 				void register_handler(const std::string& request, const request_handler_t& handler) {

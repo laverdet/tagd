@@ -1,4 +1,5 @@
 #include "libeti_worker.h"
+#include <errno.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <boost/bind.hpp>
@@ -66,7 +67,8 @@ void Worker::fd_cb(struct ev_loop* loop, struct ev_io* watcher, int revents) {
 
 	if (revents & EV_READ) {
 		that.read_cb();
-	} else {
+	}
+	if (revents & EV_WRITE) {
 		that.write_cb();
 	}
 }
@@ -78,11 +80,18 @@ void Worker::read_cb() {
 
 	// Read data from the stream
 	char buf[read_size];
-	size_t len = recv(fd, buf, read_size, 0);
+	ssize_t len = recv(fd, buf, read_size, MSG_DONTWAIT);
 	if (!len) {
 		ev_io_stop(my_loop, &fd_watcher);
 		close(fd);
 		delete this;
+		return;
+	}
+	if (len == EAGAIN) {
+		return;
+	} else if (len < 0) {
+		cerr <<"recv err: " <<len;
+		close(fd);
 		return;
 	}
 
@@ -120,15 +129,27 @@ void Worker::write_cb() {
 	boost::lock_guard<boost::mutex> lock(write_lock);
 	while (!write_buffer.empty()) {
 		buffer_t& buffer = write_buffer.front();
-		size_t wrote = send(fd, buffer.data + buffer.offset, buffer.length, MSG_DONTWAIT);
+		ssize_t wrote = send(fd, buffer.data + buffer.offset, buffer.length, MSG_DONTWAIT);
 		if (wrote != buffer.length) {
+			if (wrote == -1) {
+				if (errno == EAGAIN) {
+					wrote = 0;
+				} else {
+					close(fd);
+					cerr <<"send err: " <<errno <<"\n";
+					return;
+				}
+			}
 			buffer.offset += wrote;
 			buffer.length -= wrote;
+			return;
 		} else {
 			write_buffer.pop_front();
 		}
 	}
+	ev_io_stop(my_loop, &fd_watcher);
 	ev_io_set(&fd_watcher, fd, EV_READ);
+	ev_io_start(my_loop, &fd_watcher);
 }
 
 void Worker::handle_payload(const value_t& value) {
@@ -154,19 +175,28 @@ void Worker::handle_payload(const value_t& value) {
 			if (ii == server.message_handlers.end()) {
 				throw runtime_error("unknown message received");
 			}
-			server.threads.schedule(boost::bind(ii->second, boost::ref(*this), args));
+			server.threads.schedule(boost::bind(
+				Worker::Server::message_wrapper,
+				ii->second,
+				this,
+				args)
+			);
 		} else {
 			throw runtime_error("unknown payload received");
 		}
 	}
 }
 
-void Worker::Server::request_wrapper(request_handler_t fn, Worker* worker, const request_handle_t& handle, const std::vector<value_t>& args) {
+void Worker::Server::request_wrapper(request_handler_t fn, Worker* worker, const request_handle_t handle, const std::vector<value_t> args) {
 	try {
 		fn(*worker, handle, args);
 	} catch (runtime_error const &err) {
 		worker->respond(handle, err.what(), true);
 	}
+}
+
+void Worker::Server::message_wrapper(message_handler_t fn, Worker* worker, const std::vector<value_t> args) {
+	fn(*worker, args);
 }
 
 void Worker::respond(const request_handle_t& handle, const value_t& value, bool threw) {
@@ -177,13 +207,24 @@ void Worker::respond(const request_handle_t& handle, const value_t& value, bool 
 	const char* buf = response.c_str();
 	{
 		boost::lock_guard<boost::mutex> lock(write_lock);
-		size_t wrote = 0;
+		ssize_t wrote = 0;
 		if (write_buffer.empty()) {
 			wrote = send(fd, buf, response.length(), MSG_DONTWAIT);
 		}
 		if (wrote != response.length()) {
-			ev_io_set(&fd_watcher, fd, EV_READ | EV_WRITE);
+			if (wrote == -1) {
+				if (errno == EAGAIN) {
+					wrote = 0;
+				} else {
+					close(fd);
+					cerr <<"send err: " <<errno <<"\n";
+					return;
+				}
+			}
 			write_buffer.push_back(new buffer_t(buf + wrote, response.length() - wrote));
+			ev_io_stop(my_loop, &fd_watcher);
+			ev_io_set(&fd_watcher, fd, EV_READ | EV_WRITE);
+			ev_io_start(my_loop, &fd_watcher);
 		}
 	}
 }
