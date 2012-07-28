@@ -87,10 +87,11 @@ void Worker::read_cb() {
 		delete this;
 		return;
 	}
-	if (len == EAGAIN) {
-		return;
-	} else if (len < 0) {
-		cerr <<"recv err: " <<len;
+	if (len == -1) {
+		if (errno == EAGAIN) {
+			return;
+		}
+		cerr <<"recv err: " <<errno;
 		close(fd);
 		return;
 	}
