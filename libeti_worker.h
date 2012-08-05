@@ -52,6 +52,11 @@ class Worker {
 			ev_io_start(Worker::my_loop, &fd_watcher);
 		}
 
+		~Worker() {
+			ev_io_stop(my_loop, &fd_watcher);
+			close(fd);
+		}
+
 	public:
 
 		class Server {

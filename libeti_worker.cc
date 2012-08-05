@@ -82,8 +82,6 @@ void Worker::read_cb() {
 	char buf[read_size];
 	ssize_t len = recv(fd, buf, read_size, MSG_DONTWAIT);
 	if (!len) {
-		ev_io_stop(my_loop, &fd_watcher);
-		close(fd);
 		delete this;
 		return;
 	}
@@ -91,8 +89,8 @@ void Worker::read_cb() {
 		if (errno == EAGAIN) {
 			return;
 		}
-		cerr <<"recv err: " <<errno;
-		close(fd);
+		cerr <<"recv err: " <<errno <<"\n";
+		delete this;
 		return;
 	}
 
@@ -136,8 +134,8 @@ void Worker::write_cb() {
 				if (errno == EAGAIN) {
 					wrote = 0;
 				} else {
-					close(fd);
 					cerr <<"send err: " <<errno <<"\n";
+					delete this;
 					return;
 				}
 			}
