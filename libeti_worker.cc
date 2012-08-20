@@ -82,7 +82,7 @@ void Worker::read_cb() {
 	char buf[read_size];
 	ssize_t len = recv(fd, buf, read_size, MSG_DONTWAIT);
 	if (!len) {
-		delete this;
+		become_zombie();
 		return;
 	}
 	if (len == -1) {
@@ -90,7 +90,7 @@ void Worker::read_cb() {
 			return;
 		}
 		cerr <<"recv err: " <<errno <<"\n";
-		delete this;
+		become_zombie();
 		return;
 	}
 
@@ -135,7 +135,7 @@ void Worker::write_cb() {
 					wrote = 0;
 				} else {
 					cerr <<"send err: " <<errno <<"\n";
-					delete this;
+					become_zombie();
 					return;
 				}
 			}
@@ -162,6 +162,7 @@ void Worker::handle_payload(const value_t& value) {
 			if (ii == server.request_handlers.end()) {
 				throw runtime_error("unknown request received");
 			}
+			++this->outstanding_reqs;
 			server.threads.schedule(boost::bind(
 				Worker::Server::request_wrapper,
 				ii->second,
@@ -205,7 +206,16 @@ void Worker::respond(const request_handle_t& handle, const value_t& value, bool 
 	response += "}]\n";
 	const char* buf = response.c_str();
 	{
-		boost::lock_guard<boost::mutex> lock(write_lock);
+		boost::unique_lock<boost::mutex> lock(write_lock);
+		assert(this->outstanding_reqs);
+		--this->outstanding_reqs;
+		if (closed) {
+			if (!this->outstanding_reqs) {
+				lock.unlock();
+				delete this;
+			}
+			return;
+		}
 		ssize_t wrote = 0;
 		if (write_buffer.empty()) {
 			wrote = send(fd, buf, response.length(), MSG_DONTWAIT);

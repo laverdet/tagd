@@ -37,6 +37,8 @@ class Worker {
 		int fd;
 		Server& server;
 		struct ev_io fd_watcher;
+		size_t outstanding_reqs;
+		bool closed;
 
 		static void fd_cb(struct ev_loop* loop, struct ev_io* watcher, int revents);
 		void read_cb();
@@ -46,15 +48,21 @@ class Worker {
 		/**
 		 * Private constructer called by Server.
 		 */
-		Worker(Server& server, int fd) : server(server), fd(fd) {
+		Worker(Server& server, int fd) : server(server), fd(fd), outstanding_reqs(0), closed(false) {
 			ev_io_init(&fd_watcher, fd_cb, fd, EV_READ);
 			fd_watcher.data = this;
 			ev_io_start(Worker::my_loop, &fd_watcher);
 		}
 
-		~Worker() {
+		void become_zombie() {
+			boost::unique_lock<boost::mutex> lock(write_lock);
+			closed = true;
 			ev_io_stop(my_loop, &fd_watcher);
 			close(fd);
+			if (!outstanding_reqs) {
+				lock.unlock();
+				delete this;
+			}
 		}
 
 	public:
@@ -84,6 +92,14 @@ class Worker {
 				 * own Worker instance with event handlers inherited from the server.
 				 */
 				Server(int fd) : fd(fd), threads(10) {
+					// Ignore SIGPIPE. The internet says it's safe/recommended to do this.
+					struct sigaction sa;
+					sa.sa_handler = SIG_IGN;
+					sa.sa_flags = 0;
+					assert(sigemptyset(&sa.sa_mask) != -1);
+					assert(sigaction(SIGPIPE, &sa, 0) != -1);
+
+					// Start libev on this fd
 					ev_io_init(&accept_watcher, accept_cb, fd, EV_READ);
 					accept_watcher.data = this;
 					ev_io_start(Worker::my_loop, &accept_watcher);
