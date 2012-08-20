@@ -732,16 +732,27 @@ void req_slice(Worker& worker, const Worker::request_handle_t& handle, const vec
 
 		// Estimate count
 		if (estimate_count) {
-			if (count) {
+			if (count || **it == NULL) {
 				// Did we end up getting less than requested? No estimate required since the end was hit.
 				response.insert(make_pair("count", results.size()));
 			} else {
+				// Jump up to result #2500
+				size_t skip_forward = results.size();
+				while (skip_forward < 2500) {
+					++skip_forward;
+					++*it;
+					if (**it == NULL) {
+						response.insert(make_pair("count", skip_forward));
+						goto skip_estimate; // woohoo!
+					}
+				}
+
 				// Skip in exponentially wider chunks to guess the order of magnitude of results
 				auto_ptr<base_topic_t> fake_topic(new base_topic_t(0, 0));
-				size_t magnitude = round(log10(results.size())) - 2;
+				double magnitude = log2(skip_forward);
 				base_topic_t::ts_t last_ts = first_ts;
 				while (**it) {
-					fake_topic->ts = first_ts - (first_ts - (*it)->ts) * 10;
+					fake_topic->ts = first_ts - (first_ts - (*it)->ts) * 2;
 					if (fake_topic->ts > last_ts) {
 						// Overflow?
 						++magnitude;
@@ -754,8 +765,10 @@ void req_slice(Worker& worker, const Worker::request_handle_t& handle, const vec
 					last_ts = fake_topic->ts;
 					++magnitude;
 				}
-				response.insert(make_pair("count", pow(10, magnitude)));
+				response.insert(make_pair("count", round(pow(2, magnitude))));
+				response.insert(make_pair("estimated", true));
 			}
+skip_estimate:;
 		}
 		worker.respond(handle, response);
 	} catch (const runtime_error& error) {
