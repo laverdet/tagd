@@ -11,6 +11,7 @@
 
 const double message_cutoff = 43200;
 const double topic_cutoff = 86400 * 5;
+const size_t inverse_req = 10000;
 
 using namespace std;
 using namespace boost;
@@ -60,14 +61,19 @@ struct tag_t {
 	typedef uint32_t id_t;
 	typedef set<topic_t*, topic_t::less> topic_set_t;
 	static vector<tag_t*> tags_by_id;
+	static vector<tag_t*> inverse_tags;
 	static tag_t active_tag;
 	static tag_t global_tag;
 
 	topic_set_t topics;
+	tag_t* inverse_tag;
+
+	tag_t() : inverse_tag(NULL) {};
 
 	static tag_t& get(id_t id);
 };
 vector<tag_t*> tag_t::tags_by_id(1, NULL);
+vector<tag_t*> tag_t::inverse_tags;
 tag_t tag_t::active_tag;
 tag_t tag_t::global_tag;
 
@@ -114,6 +120,10 @@ topic_t& topic_t::get(id_t id, ts_t ts) {
 	topics_by_id.insert(make_pair(id, topic));
 	tag_t::global_tag.topics.insert(topic);
 	topic->tags.insert(&tag_t::global_tag);
+	foreach (tag_t* tag, tag_t::inverse_tags) {
+		tag->topics.insert(topic);
+		topic->tags.insert(tag);
+	}
 	return *topic;
 }
 
@@ -489,8 +499,37 @@ void msg_add_tags(Worker& worker, const vector<Worker::value_t>& args) {
 
 	foreach (const Worker::value_t& new_tag_val, new_tags) {
 		tag_t& tag = tag_t::get(new_tag_val.get_int());
+		if (tag.inverse_tag) {
+			// Remove from inverse tag
+			tag_t& inverse = *tag.inverse_tag;
+			if (topic.tags.erase(&inverse) == 0) {
+				// This topic was not found in the inverse tag and therefore already exists in the normal
+				// tag
+				continue;
+			}
+			inverse.topics.erase(&topic);
+		}
+		// Add to tag
 		tag.topics.insert(&topic);
 		topic.tags.insert(&tag);
+
+		// Is this tag big enough to need its inverse created?
+		if (
+			tag.topics.size() * 2 > tag_t::global_tag.topics.size() &&
+			!tag.inverse_tag &&
+			inverse_req < tag_t::global_tag.topics.size()
+		) {
+			tag_t& inverse = *new tag_t;
+			tag.inverse_tag = &inverse;
+			inverse.inverse_tag = &tag;
+			tag_t::inverse_tags.push_back(&inverse);
+			foreach (topic_t* topic, tag_t::global_tag.topics) {
+				if (topic->tags.find(&tag) == topic->tags.end()) {
+					topic->tags.insert(&inverse);
+					inverse.topics.insert(topic);
+				}
+			}
+		}
 	}
 }
 
@@ -510,8 +549,18 @@ void msg_remove_tag(Worker& worker, const vector<Worker::value_t>& args) {
 
 	// Remove the tag
 	tag_t& tag = tag_t::get(tag_id);
+	if (topic->tags.erase(&tag) == 0) {
+		// This topic was not tagged at all, nothing else to do in this function
+		return;
+	}
 	tag.topics.erase(topic);
-	topic->tags.erase(&tag);
+
+	// Add the inverse tag if needed
+	if (tag.inverse_tag) {
+		tag_t& inverse = *tag.inverse_tag;
+		inverse.topics.insert(topic);
+		topic->tags.insert(&inverse);
+	}
 }
 
 /**
@@ -522,8 +571,18 @@ void msg_clear_tag(Worker& worker, const vector<Worker::value_t>& args) {
 	boost::lock_guard<boost::shared_mutex> lock(write_lock);
 	tag_t::id_t tag_id = args[0].get_uint64();
 
-	// Remove tag from all topics
 	tag_t& tag = tag_t::get(tag_id);
+
+	// First, do we need to add all these topics to the inverse?
+	if (tag.inverse_tag) {
+		tag_t& inverse = *tag.inverse_tag;
+		foreach (topic_t* topic, tag.topics) {
+			topic->tags.insert(&inverse);
+			inverse.topics.insert(topic);
+		}
+	}
+
+	// Remove tag from all topics
 	foreach (topic_t* topic, tag.topics) {
 		topic->tags.erase(&tag);
 	}
@@ -669,6 +728,45 @@ topic_iterator_t::ptr build_iterator(const Worker::value_t& expr) {
 		if (type == "difference") {
 			if (exprs.size() != 3) {
 				throw runtime_error("unknown expression");
+			}
+			// Look for things to convert from [diff, a, b] to [intersect, a, ~b]
+			if (exprs[2].type() == json_spirit::int_type && exprs[2].get_int()) {
+				tag_t& tag = tag_t::get(exprs[2].get_int());
+				if (tag.inverse_tag) {
+					// Single difference expr with an inverse
+					auto_ptr<topic_iterator_t::ptr_vector_t> iterators(new topic_iterator_t::ptr_vector_t(2));
+					iterators->push_back(build_iterator(exprs[1]));
+					iterators->push_back(new basic_topic_iterator_t(tag.inverse_tag->topics));
+					return topic_iterator_t::ptr(new intersection_topic_iterator_t(iterators));
+				}
+			} else if (exprs[2].type() == json_spirit::array_type) {
+				const vector<Worker::value_t>& exprs2 = exprs[2].get_array();
+				if (exprs2[0].get_str() == "union") {
+					auto_ptr<topic_iterator_t::ptr_vector_t> iterators(new topic_iterator_t::ptr_vector_t(0));
+					auto_ptr<topic_iterator_t::ptr_vector_t> inverse_iterators(new topic_iterator_t::ptr_vector_t(0));
+					for (size_t ii = 1; ii < exprs2.size(); ++ii) {
+						if (exprs2[ii].type() == json_spirit::int_type && exprs2[ii].get_int()) {
+							tag_t& tag = tag_t::get(exprs2[ii].get_int());
+							if (tag.inverse_tag) {
+								inverse_iterators->push_back(new basic_topic_iterator_t(tag.inverse_tag->topics));
+								continue;
+							}
+						}
+						iterators->push_back(build_iterator(exprs2[ii]));
+					}
+					topic_iterator_t::ptr iterator = build_iterator(exprs[1]);
+					if (inverse_iterators->size()) {
+						inverse_iterators->push_back(iterator);
+						iterator = topic_iterator_t::ptr(new intersection_topic_iterator_t(inverse_iterators));
+					}
+					if (iterators->size()) {
+						iterator = topic_iterator_t::ptr(new difference_topic_iterator_t(
+							iterator,
+							topic_iterator_t::ptr(new union_topic_iterator_t(iterators))
+						));
+					}
+					return iterator;
+				}
 			}
 			return topic_iterator_t::ptr(new difference_topic_iterator_t(build_iterator(exprs[1]), build_iterator(exprs[2])));
 		} else {
