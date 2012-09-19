@@ -684,7 +684,7 @@ topic_iterator_t::ptr build_wildcard_iterator(const string& word) {
 		topic_iterator_t::ptr new_iterator(new basic_topic_iterator_t(it->second->topics));
 		total_matches += new_iterator->max();
 		iterators->push_back(new_iterator);
-		if (total_matches > topic_t::topics_by_id.size() / 4) {
+		if (total_matches > topic_t::topics_by_id.size() / 4 || iterators.size() > 1000) {
 			throw runtime_error("too many matches");
 		}
 		++it;
