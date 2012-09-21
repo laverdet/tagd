@@ -42,7 +42,8 @@ struct topic_t: public base_topic_t {
 	static map<id_t, base_topic_t*> topics_by_id;
 
 	set<struct tag_t*> tags;
-	set<struct word_t*> words;
+	set<struct word_t*> title;
+	set<struct word_t*> document;
 	set<post_t> messages;
 	map<user_t, uint32_t> message_counts;
 	ts_t created;
@@ -82,7 +83,8 @@ struct word_t {
 	static map<const string, word_t*> words_by_string;
 
 	const string word;
-	topic_set_t topics;
+	topic_set_t topics_titles;
+	topic_set_t topics_documents;
 
 	word_t(const string& word) : word(word) {}
 
@@ -136,8 +138,11 @@ void topic_t::bump(ts_t ts) {
 	foreach (tag_t* tag, tags) {
 		tag->topics.erase(this);
 	}
-	foreach (word_t* word, words) {
-		word->topics.erase(this);
+	foreach (word_t* word, document) {
+		word->topics_documents.erase(this);
+	}
+	foreach (word_t* word, title) {
+		word->topics_titles.erase(this);
 	}
 
 	// Bump the topic and add back to tag sets
@@ -145,8 +150,11 @@ void topic_t::bump(ts_t ts) {
 	foreach (tag_t* tag, tags) {
 		tag->topics.insert(this);
 	}
-	foreach (word_t* word, words) {
-		word->topics.insert(this);
+	foreach (word_t* word, document) {
+		word->topics_documents.insert(this);
+	}
+	foreach (word_t* word, title) {
+		word->topics_titles.insert(this);
 	}
 }
 
@@ -592,44 +600,52 @@ void msg_clear_tag(Worker& worker, const vector<Worker::value_t>& args) {
 /**
  * Sets the full-text search content of a topic.
  */
-void msg_full_text(Worker& worker, const vector<Worker::value_t>& args) {
-	boost::lock_guard<boost::shared_mutex> lock(write_lock);
-	topic_t::id_t id = args[0].get_uint64();
-	topic_t::ts_t ts = args[1].get_int();
-	const vector<Worker::value_t>& document = args[2].get_array();
-
-	topic_t& topic = topic_t::get(id, ts);
-	set<word_t*> original_words(topic.words);
-	topic.words.clear();
+template <set<word_t*> topic_t::*words, word_t::topic_set_t word_t::*topics>
+void update_full_text(topic_t& topic, const vector<Worker::value_t>& document) {
+	set<word_t*> original_words(topic.*words);
+	(topic.*words).clear();
 	uint32_t ii = 0;
 	foreach (const Worker::value_t& token, document) {
 		word_t& word = word_t::get(token.get_str());
-		topic.words.insert(&word);
+		(topic.*words).insert(&word);
 		++ii;
 	}
 
 	set<word_t*>::iterator left = original_words.begin();
-	set<word_t*>::iterator right = topic.words.begin();
-	while (left != original_words.end() && right != topic.words.end()) {
+	set<word_t*>::iterator right = (topic.*words).begin();
+	while (left != original_words.end() && right != (topic.*words).end()) {
 		if (*left == *right) {
 			++left;
 			++right;
 		} else if (*left < *right) {
-			(*left)->topics.erase(&topic);
+			(*left->*topics).erase(&topic);
 			++left;
 		} else {
-			(*right)->topics.insert(&topic);
+			(*right->*topics).insert(&topic);
 			++right;
 		}
 	}
 	while (left != original_words.end()) {
-		(*left)->topics.erase(&topic);
+		(*left->*topics).erase(&topic);
 		++left;
 	}
-	while (right != topic.words.end()) {
-		(*right)->topics.insert(&topic);
+	while (right != (topic.*words).end()) {
+		(*right->*topics).insert(&topic);
 		++right;
 	}
+
+}
+
+void msg_full_text(Worker& worker, const vector<Worker::value_t>& args) {
+	boost::lock_guard<boost::shared_mutex> lock(write_lock);
+	topic_t::id_t id = args[0].get_uint64();
+	topic_t::ts_t ts = args[1].get_int();
+	const vector<Worker::value_t>& title = args[2].get_array();
+	const vector<Worker::value_t>& document = args[3].get_array();
+
+	topic_t& topic = topic_t::get(id, ts);
+	update_full_text<&topic_t::title, &word_t::topics_titles>(topic, title);
+	update_full_text<&topic_t::document, &word_t::topics_documents>(topic, document);
 }
 
 /**
@@ -676,12 +692,13 @@ void msg_flush_counts(Worker& worker, const vector<Worker::value_t>& args) {
 /**
  * Builds an iterator from a wildcard word match. Throws if this wildcard is unreasonable.
  */
+template <word_t::topic_set_t word_t::*topics>
 topic_iterator_t::ptr build_wildcard_iterator(const string& word) {
 	size_t total_matches = 0;
 	auto_ptr<topic_iterator_t::ptr_vector_t> iterators(new topic_iterator_t::ptr_vector_t);
 	map<const string, word_t*>::iterator it = word_t::words_by_string.lower_bound(word);
 	while (it != word_t::words_by_string.end() && it->first.compare(0, word.length(), word) == 0) {
-		topic_iterator_t::ptr new_iterator(new basic_topic_iterator_t(it->second->topics));
+		topic_iterator_t::ptr new_iterator(new basic_topic_iterator_t(it->second->*topics));
 		total_matches += new_iterator->max();
 		iterators->push_back(new_iterator);
 		if (total_matches > topic_t::topics_by_id.size() / 4 || iterators->size() > 1000) {
@@ -698,6 +715,7 @@ topic_iterator_t::ptr build_wildcard_iterator(const string& word) {
 /**
  * Builds an iterator from a JSON expression.
  */
+template <word_t::topic_set_t word_t::*topics>
 topic_iterator_t::ptr build_iterator(const Worker::value_t& expr) {
 	if (expr.type() == json_spirit::int_type) {
 		int val = expr.get_int();
@@ -714,11 +732,11 @@ topic_iterator_t::ptr build_iterator(const Worker::value_t& expr) {
 			// prefix search
 			string word = expr.get_str();
 			word.erase(word.length() - 1, 1);
-			return build_wildcard_iterator(word);
+			return build_wildcard_iterator<topics>(word);
 		} else {
 			word_t* word = word_t::find(expr.get_str());
 			if (word) {
-				return topic_iterator_t::ptr(new basic_topic_iterator_t(word->topics));
+				return topic_iterator_t::ptr(new basic_topic_iterator_t(word->*topics));
 			}
 			return topic_iterator_t::ptr(new null_topic_iterator_t);
 		}
@@ -735,7 +753,7 @@ topic_iterator_t::ptr build_iterator(const Worker::value_t& expr) {
 				if (tag.inverse_tag) {
 					// Single difference expr with an inverse
 					auto_ptr<topic_iterator_t::ptr_vector_t> iterators(new topic_iterator_t::ptr_vector_t(2));
-					iterators->push_back(build_iterator(exprs[1]));
+					iterators->push_back(build_iterator<topics>(exprs[1]));
 					iterators->push_back(new basic_topic_iterator_t(tag.inverse_tag->topics));
 					return topic_iterator_t::ptr(new intersection_topic_iterator_t(iterators));
 				}
@@ -752,9 +770,9 @@ topic_iterator_t::ptr build_iterator(const Worker::value_t& expr) {
 								continue;
 							}
 						}
-						iterators->push_back(build_iterator(exprs2[ii]));
+						iterators->push_back(build_iterator<topics>(exprs2[ii]));
 					}
-					topic_iterator_t::ptr iterator = build_iterator(exprs[1]);
+					topic_iterator_t::ptr iterator = build_iterator<topics>(exprs[1]);
 					if (inverse_iterators->size()) {
 						inverse_iterators->push_back(iterator);
 						iterator = topic_iterator_t::ptr(new intersection_topic_iterator_t(inverse_iterators));
@@ -768,16 +786,16 @@ topic_iterator_t::ptr build_iterator(const Worker::value_t& expr) {
 					return iterator;
 				}
 			}
-			return topic_iterator_t::ptr(new difference_topic_iterator_t(build_iterator(exprs[1]), build_iterator(exprs[2])));
+			return topic_iterator_t::ptr(new difference_topic_iterator_t(build_iterator<topics>(exprs[1]), build_iterator<topics>(exprs[2])));
 		} else {
 			if (exprs.size() == 2) {
-				return build_iterator(exprs[1]);
+				return build_iterator<topics>(exprs[1]);
 			} else if (exprs.size() == 1) {
 				throw runtime_error("unknown expression");
 			}
 			auto_ptr<topic_iterator_t::ptr_vector_t> iterators(new topic_iterator_t::ptr_vector_t(exprs.size() - 1));
 			for (size_t ii = 1; ii < exprs.size(); ++ii) {
-				iterators->push_back(build_iterator(exprs[ii]));
+				iterators->push_back(build_iterator<topics>(exprs[ii]));
 			}
 			if (type == "union") {
 				return topic_iterator_t::ptr(new union_topic_iterator_t(iterators));
@@ -800,7 +818,10 @@ void req_slice(Worker& worker, const Worker::request_handle_t& handle, const vec
 	try {
 		// Initialize
 		boost::shared_lock<boost::shared_mutex> lock(write_lock);
-		topic_iterator_t::ptr it = build_iterator(args[0]);
+		bool search_documents = args.size() > 4 ? (args[4].type() == json_spirit::bool_type ? args[4].get_bool() : false) : false;
+		topic_iterator_t::ptr it = search_documents ?
+			build_iterator<&word_t::topics_documents>(args[0]) :
+			build_iterator<&word_t::topics_titles>(args[0]);
 		size_t count = args[1].get_int();
 		topic_t::ts_t ff = args.size() > 2 ? (args[2].type() == json_spirit::int_type ? args[2].get_int() : 0) : 0;
 		bool estimate_count = args.size() > 3 ? (args[3].type() == json_spirit::bool_type ? args[3].get_bool() : false) : false;
@@ -884,7 +905,7 @@ void req_hot(Worker& worker, const Worker::request_handle_t& handle, const vecto
 	boost::shared_lock<boost::shared_mutex> lock(write_lock);
 	auto_ptr<topic_iterator_t::ptr_vector_t> iterators(new topic_iterator_t::ptr_vector_t);
 	iterators->push_back(topic_iterator_t::ptr(new basic_topic_iterator_t(tag_t::active_tag.topics)));
-	iterators->push_back(build_iterator(args[0]));
+	iterators->push_back(build_iterator<&word_t::topics_titles>(args[0])); // build_iterator<> template doesn't really matter.
 	topic_iterator_t::ptr it(new intersection_topic_iterator_t(iterators));
 	uint32_t count = args[1].get_int();
 
