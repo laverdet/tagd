@@ -3,6 +3,7 @@
 #include <boost/threadpool.hpp>
 #include <boost/thread/mutex.hpp>
 #include <boost/ptr_container/ptr_deque.hpp>
+#include <boost/detail/atomic_count.hpp>
 #include <ev.h>
 #include <json_spirit.h>
 
@@ -37,7 +38,7 @@ class Worker {
 		int fd;
 		Server& server;
 		struct ev_io fd_watcher;
-		size_t outstanding_reqs;
+		boost::detail::atomic_count outstanding_reqs;
 		bool closed;
 
 		static void fd_cb(struct ev_loop* loop, struct ev_io* watcher, int revents);

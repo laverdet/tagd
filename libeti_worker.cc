@@ -207,9 +207,11 @@ void Worker::respond(const request_handle_t& handle, const value_t& value, bool 
 	const char* buf = response.c_str();
 	{
 		boost::unique_lock<boost::mutex> lock(write_lock);
-		assert(this->outstanding_reqs);
-		--this->outstanding_reqs;
+		assert(--this->outstanding_reqs >= 0);
 		if (closed) {
+			// This check to outstanding_reqs is *not* thread safe. However, since this code is only
+			// invoked in the `closed` case, no threads will be incrementing outstanding_reqs, only the
+			// decrement above which is blocked with an exclusive lock.
 			if (!this->outstanding_reqs) {
 				lock.unlock();
 				delete this;
