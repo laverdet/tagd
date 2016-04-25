@@ -71,3 +71,6 @@ service. Instead it is offered as a case study for those interested in this kind
 of thing. Currently I'm running this with an index size of ~80G with hundreds of
 thousands of requests per day. Stability is very good with uptime reaching past
 a year.
+
+!["Online Community"](http://vignette1.wikia.nocookie.net/geosworld/images/2/28/Mario_and_Yoshi_SMW.png/revision/latest?cb=20130929132405 =500x500)
+
